@@ -52,9 +52,21 @@ const invRes = await get('/api/liquid-glass/inventory')
 const inv = await invRes.json()
 check('inventory 200', invRes.status === 200)
 check('inventory ok flag', inv.ok === true)
-check('found wallpapers', inv.total > 50, `total=${inv.total}`)
+check('found wallpapers', inv.total > 20, `total=${inv.total}`)
 check('installDir located', typeof inv.installDir === 'string' && inv.installDir.length > 0, inv.installDir)
 check('playable > 0', inv.playable > 0, `playable=${inv.playable}`)
+
+// Scene wallpapers are deliberately not offered: their only usable still is a
+// 1:1 preview that a 16:9 window upscales as much as 11x. They must be absent
+// from the inventory entirely, and nothing may arrive with an unknown type.
+const scenes = inv.wallpapers.filter((w) => w.type === 'scene')
+check('no scene wallpapers offered', scenes.length === 0, `${scenes.length} present`)
+const unknown = inv.wallpapers.filter((w) => !['video', 'image', 'web'].includes(w.type))
+check('every entry has a supported type', unknown.length === 0, JSON.stringify(unknown.slice(0, 3).map((w) => w.type)))
+check(
+  'no entry exposes a scene URL',
+  inv.wallpapers.every((w) => !('sceneUrl' in w) || w.sceneUrl === null),
+)
 
 const video = inv.wallpapers.find((w) => w.type === 'video' && w.mediaUrl)
 const withPreview = inv.wallpapers.find((w) => w.previewUrl)

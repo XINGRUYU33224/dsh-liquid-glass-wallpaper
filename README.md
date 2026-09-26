@@ -34,10 +34,28 @@ Workshop 内容版权归原作者所有。
 
 | Type | Rendering | Notes |
 | --- | --- | --- |
-| `video` | `<video>` loop, muted, autoplay | The best liquid-glass result. Still preview is painted underneath so the backdrop is never black while decoding. |
-| `image` | `<img>` | Direct render. |
+| `video` | `<video>` loop, muted, autoplay | The best liquid-glass result, and the sharpest: 4K sources decode natively. A still preview is painted underneath so the backdrop is never black while decoding. |
+| `image` | `<img>` | Direct render at the source resolution. |
 | `web` | sandboxed same-origin `<iframe>` (`allow-scripts`) | Web wallpapers run their own JS **same-origin**. Only install ones you trust. |
-| `scene` | preview image | Scene `.pkg` replay needs a WebGL player and is **not** implemented here; scenes fall back to their preview still. |
+
+### Why scene wallpapers are not offered
+
+They were tried and removed. A scene's real content lives in a `scene.pkg`, and this
+plugin cannot replay it — the only usable still is the project's own `preview.jpg`,
+which in a real library is **1:1 and at most 1080×1080**. Filling a 16:9 window with
+that means a median 1.56× and a worst-case **11×** upscale, so every scene looked soft
+no matter how the glass settings were tuned.
+
+The `.pkg` itself could not be read either. The index format was recovered
+(`u32 pathLen | path | u32 offset | u32 length`, contiguous, no padding) and validates
+against all 45 projects, but the payload bytes do not map to their declared filenames,
+so a further layer of structure remains unknown. `resourcecompiler64.exe`,
+`resourceutil64.dll` and `FreeImage64.dll` were all checked for a decoder and none
+provided one.
+
+Replaying scenes properly would need a WebGL player for layered 2D/3D scenes and WE
+material semantics — a project of its own. Rather than ship a type that always looks
+soft, the plugin skips scene projects entirely and says so here.
 
 ## Install
 
