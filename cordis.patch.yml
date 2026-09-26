@@ -1,0 +1,6 @@
+# liquid-glass-wallpaper bundle patch: inserts its own loader row into the
+# profile's plugin roster. Install with:
+#   dsh plugin --profile desktop add link:<path-to-this-dir>
+- insert:
+    - id: liquid-glass-wallpaper
+      name: 'dsh-liquid-glass-wallpaper'

@@ -1,0 +1,35 @@
+# NOTICE
+
+## Wallpaper files are not part of this project
+
+This plugin **reads** wallpaper files that already exist on your machine, from a local
+Wallpaper Engine installation. It does not bundle, host, mirror, or redistribute any
+wallpaper.
+
+Wallpapers from the Steam Workshop belong to their respective authors. They are included
+in this repository in no form whatsoever — no `.mp4`, `.pkg`, `.tex`, preview image, or
+Wallpaper Engine `project.json` is committed here, and `.gitignore` excludes the caches
+that reference them.
+
+The screenshots and fixtures referenced in the tests point at whatever library the
+machine running the tests happens to have. They are not shipped.
+
+## If you fork this
+
+Do not add wallpaper content to your fork. Point the plugin at your own local library
+instead, and respect each Workshop author's terms.
+
+## Third-party runtime dependencies
+
+The plugin itself has **no runtime dependencies**. It uses only the Node.js standard
+library (`node:fs`, `node:http`, `node:crypto`, `node:path`, `node:os`,
+`node:child_process`) and browser APIs.
+
+The test scripts optionally use [Playwright](https://playwright.dev/) for the live
+browser suites; it is not required to install or run the plugin.
+
+## Trademarks
+
+"Wallpaper Engine" and "Steam" are trademarks of their respective owners. This project
+is an independent interoperability tool and is not affiliated with, endorsed by, or
+sponsored by either.

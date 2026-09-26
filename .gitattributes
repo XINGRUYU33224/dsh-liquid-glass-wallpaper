@@ -1,0 +1,12 @@
+# Normalize line endings: the repo stores LF, working trees get the platform default.
+# This matters because lib/client.js is a generated artifact compared byte-for-byte by
+# `npm run check` — CRLF conversion would make it look stale on every checkout.
+* text=auto eol=lf
+
+# The generated bundle must stay byte-identical to what build-client.mjs writes.
+lib/client.js text eol=lf
+src/client.js text eol=lf
+
+*.png binary
+*.jpg binary
+*.webp binary

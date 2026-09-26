@@ -1,0 +1,34 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# the token cache this plugin used to write; never commit machine state
+.cache/
+*.tokens.json
+
+# build output is committed on purpose: lib/client.js is the shipped artifact and
+# consumers install straight from the repo without a build step. Its staleness is
+# gated by `node scripts/build-client.mjs --check` in the test suite, so it cannot
+# drift from src/client.js unnoticed.
+# (Do not add lib/ here.)
+
+# logs & OS noise
+*.log
+npm-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# editors
+.vscode/
+.idea/
+*.swp
+
+# python test tooling
+__pycache__/
+*.pyc
+.venv/
+
+# local screenshots from the live-browser test scripts
+/shots/

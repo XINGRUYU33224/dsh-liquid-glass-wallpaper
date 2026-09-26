@@ -1,0 +1,59 @@
+{
+  "name": "dsh-liquid-glass-wallpaper",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "Liquid-glass Wallpaper Engine backdrop for the DeepSeek Harness Web GUI — reads your local Wallpaper Engine library and renders it behind the shell as frosted glass.",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "wallpaper-engine",
+    "wallpaper",
+    "liquid-glass",
+    "glassmorphism",
+    "backdrop",
+    "web-gui"
+  ],
+  "license": "MIT",
+  "author": "liquid-glass-wallpaper contributors",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.1.5-rc.1"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "check": "node scripts/build-client.mjs --check",
+    "verify": "node scripts/verify.mjs",
+    "test": "node scripts/verify.mjs"
+  }
+}
