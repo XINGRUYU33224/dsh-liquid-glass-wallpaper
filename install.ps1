@@ -32,13 +32,19 @@ param(
   [string]$Ref,
 
   # Skip the post-install load-tree verification.
-  [switch]$SkipVerify
+  [switch]$SkipVerify,
+
+  # Skip asking GitHub whether a newer revision exists (offline installs).
+  [switch]$SkipRemoteCheck
 )
 
 $ErrorActionPreference = 'Stop'
 
 $RepoSpec = 'XINGRUYU33224/dsh-liquid-glass-wallpaper'
 $PkgName  = 'dsh-liquid-glass-wallpaper'
+# Split once, for lock-file lookups that key on owner/repo.
+$PkgNameOwner = $RepoSpec.Split('/')[0]
+$PkgNameRepo  = $RepoSpec.Split('/')[-1].Replace('.git', '')
 
 function Info($m) { Write-Host "  $m" }
 function Step($m) { Write-Host "`n== $m ==" -ForegroundColor Cyan }
@@ -173,18 +179,78 @@ $spec = if ($Local) {
 }
 Info "spec: $spec"
 
-# Re-running is a normal thing to do (to update, or after a failed attempt), so
-# make it idempotent: if the package is already present at this spec, skip the
-# network round trip entirely.
+# Re-running is a normal thing to do — it is how you update — so decide between
+# "no-op" and "reinstall" by CONTENT, not by the spec string.
+#
+# A git spec like `github:owner/repo` stays identical while the repository moves
+# on, so treating a matching spec as "already installed" would silently skip
+# every update. Instead, ask git whether the installed revision differs from the
+# remote head, and reinstall when it does or when that cannot be determined.
 $currentManifest = Get-Content $manifest -Raw | ConvertFrom-Json
 $currentSpec = $currentManifest.dependencies.$PkgName
-$alreadyAtSpec = ($currentSpec -eq $spec) -and
-                 (Test-Path (Join-Path $profileDir "node_modules\$PkgName\package.json"))
+$installedDir = Join-Path $profileDir "node_modules\$PkgName"
+$payloadPresent = Test-Path (Join-Path $installedDir 'package.json')
 
-if ($alreadyAtSpec -and -not $Local) {
-  Info "already installed at this spec; skipping pnpm"
+$needsInstall = $true
+$reason = 'not installed'
+
+if ($Local) {
+  $reason = 'local link install requested'
+} elseif ($currentSpec -eq $spec -and $payloadPresent) {
+  # Compare the checked-out revision recorded by pnpm against the remote head.
+  $revFile = Join-Path $installedDir '.git-commit'
+  $installedRev = $null
+  if (Test-Path $revFile) {
+    try { $installedRev = (Get-Content $revFile -Raw).Trim() } catch { }
+  }
+  if (-not $installedRev) {
+    # pnpm records a git dependency's resolved revision in the lock file as a
+    # codeload tarball URL ending in the commit sha, e.g.
+    #   https://codeload.github.com/<owner>/<repo>/tar.gz/<sha>
+    $lock = Join-Path $profileDir 'pnpm-lock.yaml'
+    if (Test-Path $lock) {
+      $m = Select-String -Path $lock -Pattern "codeload\.github\.com/$([regex]::Escape($PkgNameOwner))/$([regex]::Escape($PkgNameRepo))/tar\.gz/([0-9a-f]{40})" -AllMatches
+      if ($m -and $m.Matches.Count -gt 0) { $installedRev = $m.Matches[-1].Groups[1].Value }
+      if (-not $installedRev) {
+        # Older pnpm, or a different host: fall back to any 40-hex commit.
+        $m2 = Select-String -Path $lock -Pattern "$([regex]::Escape($PkgName))[^\n]*?([0-9a-f]{40})" -AllMatches
+        if ($m2 -and $m2.Matches.Count -gt 0) { $installedRev = $m2.Matches[-1].Groups[1].Value }
+      }
+    }
+  }
+
+  $remoteRev = $null
+  if (-not $SkipRemoteCheck) {
+    try {
+      $remoteRev = (& git ls-remote "https://github.com/$RepoSpec.git" HEAD 2>$null | Select-Object -First 1) -replace '\s.*$', ''
+    } catch { }
+  }
+
+  if ($installedRev -and $remoteRev) {
+    if ($installedRev -eq $remoteRev) {
+      $needsInstall = $false
+      $reason = "already at $($remoteRev.Substring(0, 7))"
+    } else {
+      $reason = "update available: $($installedRev.Substring(0, 7)) -> $($remoteRev.Substring(0, 7))"
+    }
+  } elseif ($remoteRev) {
+    # Installed, but we cannot prove which revision: reinstall rather than
+    # risk leaving the user on a stale build.
+    $reason = 'installed revision unknown; reinstalling to be safe'
+  } else {
+    $needsInstall = $false
+    $reason = 'already installed (could not reach GitHub to check for updates)'
+    Warn 'could not reach github.com to check for updates; keeping the installed copy'
+  }
+} elseif ($payloadPresent) {
+  $reason = "spec changed: $currentSpec -> $spec"
+}
+
+if (-not $needsInstall) {
+  Info "no change needed — $reason"
   $code = 0
 } else {
+  Info $reason
   Push-Location $profileDir
   try {
     if ($nodeExe -and $runtimePnpm) {
