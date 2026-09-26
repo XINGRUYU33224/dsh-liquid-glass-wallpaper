@@ -37,7 +37,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$RepoSpec = 'Xinruyu54088/dsh-liquid-glass-wallpaper'
+$RepoSpec = 'XINGRUYU33224/dsh-liquid-glass-wallpaper'
 $PkgName  = 'dsh-liquid-glass-wallpaper'
 
 function Info($m) { Write-Host "  $m" }
@@ -263,19 +263,83 @@ if (-not $SkipVerify) {
   }
   Ok 'payload present (lib/client.js, cordis.patch.yml)'
 
-  # Confirm the boot loader actually composes it, by dumping the profile's
-  # config. This catches a bad bundle patch before the user restarts their GUI
-  # and finds a broken tray.
+  # Confirm the boot loader actually composes this plugin, by dumping the
+  # profile's composed config. This catches a bad bundle patch before the user
+  # restarts their GUI and finds a broken tray.
+  #
+  # Try every plausible way to invoke dsh, most authoritative first, so the
+  # check does not silently skip on a machine where dsh is simply not on PATH:
+  #   1. the app's own bundled CLI (same code the GUI boots with),
+  #   2. the app's node running that CLI directly,
+  #   3. npx @deepseek-ai/dsh,
+  #   4. a dsh on PATH.
   $dumpOk = $false
-  try {
+  $dumpTried = @()
+  $dumpErr = $null
+
+  # The desktop app keeps dsh inside app.asar, so only its own Electron binary
+  # (with ELECTRON_RUN_AS_NODE) can load it. Prefer that when present.
+  $asarCli = $null
+  $electron = $null
+  foreach ($root in $appRoots) {
+    if (-not $root) { continue }
+    $exe = Join-Path $root 'DeepSeek Harness.exe'
+    if (Test-Path $exe) { $electron = $exe }
+    $loader = Join-Path $root 'resources\app.asar\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js'
+    if (Test-Path $loader) { $asarCli = $loader }
+  }
+
+  if ($electron -and $asarCli) {
+    $dumpTried += 'app CLI (asar)'
+    try {
+      $prevElectron = $env:ELECTRON_RUN_AS_NODE
+      $env:ELECTRON_RUN_AS_NODE = '1'
+      $dump = & $electron --expose-internals $asarCli --profile $Profile --dump-config 2>&1
+      $env:ELECTRON_RUN_AS_NODE = $prevElectron
+      if ($dump -match [regex]::Escape($PkgName) -and $dump -notmatch 'failed to') { $dumpOk = $true }
+      elseif ($dump -match 'managed exclusively|failed to') { $dumpErr = ($dump | Select-String 'managed exclusively|failed to' | Select-Object -First 1) }
+    } catch {
+      $env:ELECTRON_RUN_AS_NODE = $null
+      $dumpErr = $_.Exception.Message
+    }
+  }
+
+  if (-not $dumpOk) {
     $dshCmd = Get-Command dsh -ErrorAction SilentlyContinue
     if ($dshCmd) {
-      $dump = & dsh --profile $Profile --dump-config 2>&1
-      if ($dump -match $PkgName -and $dump -notmatch 'failed to') { $dumpOk = $true }
+      $dumpTried += 'dsh on PATH'
+      try {
+        $dump = & dsh --profile $Profile --dump-config 2>&1
+        if ($dump -match [regex]::Escape($PkgName) -and $dump -notmatch 'failed to') { $dumpOk = $true }
+        elseif (-not $dumpErr) { $dumpErr = ($dump | Select-String 'failed to' | Select-Object -First 1) }
+      } catch { if (-not $dumpErr) { $dumpErr = $_.Exception.Message } }
     }
-  } catch { }
-  if ($dumpOk) { Ok 'the boot loader composes this plugin' }
-  else { Warn "could not verify the load tree (no 'dsh' CLI on PATH); skipping" }
+  }
+
+  if (-not $dumpOk -and (Get-Command npx -ErrorAction SilentlyContinue)) {
+    $dumpTried += 'npx @deepseek-ai/dsh'
+    try {
+      $dump = & npx --yes @deepseek-ai/dsh --profile $Profile --dump-config 2>&1
+      if ($dump -match [regex]::Escape($PkgName) -and $dump -notmatch 'failed to') { $dumpOk = $true }
+      elseif (-not $dumpErr) { $dumpErr = ($dump | Select-String 'failed to|cannot resolve' | Select-Object -First 1) }
+    } catch { if (-not $dumpErr) { $dumpErr = $_.Exception.Message } }
+  }
+
+  if ($dumpOk) {
+    Ok "the boot loader composes this plugin (via $($dumpTried -join ', '))"
+  } else {
+    # Fall back to a static check that always works: the bundle list in the
+    # manifest must name this package, and the package must carry a bundle patch.
+    $bundled = (Get-Content $manifest -Raw | ConvertFrom-Json).dsh.profile.bundles -contains $PkgName
+    $hasPatch = Test-Path (Join-Path $installed 'cordis.patch.yml')
+    if ($bundled -and $hasPatch) {
+      Ok 'bundle registration is correct (manifest lists it and the patch exists)'
+      Warn "could not run a live load-tree dump ($($dumpTried -join ', ')); install is registered correctly"
+      if ($dumpErr) { Warn "dump said: $dumpErr" }
+    } else {
+      Die "the plugin is present but not registered as a bundle layer (bundled=$bundled patch=$hasPatch)."
+    }
+  }
 }
 
 # ---------------------------------------------------------------- done

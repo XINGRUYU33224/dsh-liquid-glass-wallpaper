@@ -46,7 +46,7 @@ detects which profile your GUI is running on, installs from GitHub with that pro
 own pnpm, registers the bundle layer, and verifies the load tree:
 
 ```powershell
-git clone https://github.com/Xinruyu54088/dsh-liquid-glass-wallpaper.git
+git clone https://github.com/XINGRUYU33224/dsh-liquid-glass-wallpaper.git
 cd dsh-liquid-glass-wallpaper
 pwsh -File install.ps1
 ```
@@ -71,7 +71,7 @@ The installer is idempotent: re-running it is how you update.
 declares `dsh.bundle`, dsh **adds it to the profile's bundle list automatically**:
 
 ```sh
-dsh plugin --profile <your-profile> add github:Xinruyu54088/dsh-liquid-glass-wallpaper
+dsh plugin --profile <your-profile> add github:XINGRUYU33224/dsh-liquid-glass-wallpaper
 ```
 
 > **Which profile is mine?** It is the last path argument of the running host process.
@@ -84,7 +84,7 @@ dsh plugin --profile <your-profile> add github:Xinruyu54088/dsh-liquid-glass-wal
 > cd "$DSH_HOME/profiles/desktop"
 > "<app>/resources/runtime/bin/node/node.exe" \
 >   "<app>/resources/runtime/pnpm/bin/pnpm.mjs" \
->   add github:Xinruyu54088/dsh-liquid-glass-wallpaper
+>   add github:XINGRUYU33224/dsh-liquid-glass-wallpaper
 > ```
 >
 > then add `"dsh-liquid-glass-wallpaper"` to `dsh.profile.bundles` in that profile's
