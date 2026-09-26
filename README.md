@@ -41,31 +41,66 @@ Workshop 内容版权归原作者所有。
 
 ## Install
 
-Clone anywhere **without spaces in the path** (pnpm splits `link:` arguments on spaces),
-then add it to a profile:
+**Windows, one command.** Clone and run the installer — it finds your DSH home,
+detects which profile your GUI is running on, installs from GitHub with that profile's
+own pnpm, registers the bundle layer, and verifies the load tree:
 
-```sh
-git clone https://github.com/<you>/dsh-liquid-glass-wallpaper.git
-dsh plugin --profile web add "link:/absolute/path/to/dsh-liquid-glass-wallpaper"
+```powershell
+git clone https://github.com/Xinruyu54088/dsh-liquid-glass-wallpaper.git
+cd dsh-liquid-glass-wallpaper
+pwsh -File install.ps1
 ```
 
-Restart the GUI afterwards. The plugin registers itself as a profile bundle layer, so the
-settings section and the backdrop engine both come from the same package.
+Then restart your GUI (for the desktop app: **fully quit and reopen**, not a page
+refresh). The section appears at **设置 → 液态玻璃壁纸**.
 
-> **Which profile?** Your GUI's profile is the last path argument of the running host
-> process. The `desktop` profile is refused *by name* from the CLI
-> (`managed exclusively by the Electron application`), but it is an ordinary cordis
-> profile — install into it with the app's own pnpm instead:
+Useful flags:
+
+| Flag | Effect |
+| --- | --- |
+| `-Profile <name>` | Target a specific profile instead of the detected one. |
+| `-Local` | Install from this checkout (`link:`) instead of GitHub — for development. |
+| `-Ref <branch\|tag\|sha>` | Install a specific git ref. |
+| `-SkipVerify` | Skip the post-install load-tree check. |
+
+The installer is idempotent: re-running it is how you update.
+
+### Any platform, manual
+
+`dsh plugin` forwards to pnpm, so a git spec works directly — and because the package
+declares `dsh.bundle`, dsh **adds it to the profile's bundle list automatically**:
+
+```sh
+dsh plugin --profile <your-profile> add github:Xinruyu54088/dsh-liquid-glass-wallpaper
+```
+
+> **Which profile is mine?** It is the last path argument of the running host process.
+> The `desktop` profile is refused *by name* from the CLI
+> (`managed exclusively by the Electron application`), even though it is an ordinary
+> cordis profile. `install.ps1` handles this by driving the app's bundled pnpm directly;
+> manually, that is:
 >
 > ```sh
 > cd "$DSH_HOME/profiles/desktop"
-> node "<app>/resources/runtime/pnpm/bin/pnpm.mjs" install
+> "<app>/resources/runtime/bin/node/node.exe" \
+>   "<app>/resources/runtime/pnpm/bin/pnpm.mjs" \
+>   add github:Xinruyu54088/dsh-liquid-glass-wallpaper
 > ```
 >
-> after adding `"dsh-liquid-glass-wallpaper": "link:<path>"` to `dependencies` and the
-> package name to `dsh.profile.bundles`.
+> then add `"dsh-liquid-glass-wallpaper"` to `dsh.profile.bundles` in that profile's
+> `package.json`. Write it **without a BOM** — a BOM makes the boot loader fail with
+> `Unexpected token`.
 
-### Verify
+### Requirements
+
+- **Wallpaper Engine** installed via Steam (app `431960`). Without it the section still
+  loads and explains that no library was found.
+- **Node 20+** — only for the installer/tests. The plugin runs on DSH's own runtime and
+  has **no runtime dependencies**.
+- Windows for wallpaper discovery (Steam registry + `libraryfolders.vdf`). The backdrop
+  engine itself is platform-neutral; manual library folders are the fallback elsewhere.
+
+### Verify your install
 
 ```sh
 npm run verify                   # 85 checks: host, client, bundle, Range, lifecycle
