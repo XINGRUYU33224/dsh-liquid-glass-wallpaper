@@ -90,7 +90,7 @@ html[${ROOT_ATTR}] body {
  * white. Leaving them opaque looks broken next to a visible wallpaper, so while
  * the layer is active they are re-dressed as frosted glass: a translucent
  * surface plus a backdrop blur. The .lgw-glasspanel class is applied at runtime
- * by glassShellPanels() to elements that are panel-shaped but not
+ * by dressShell() to elements that are panel-shaped but not
  * backdrop-sized, so this never touches cards, buttons or inputs.
  */
 html[${ROOT_ATTR}] .lgw-glasspanel {
@@ -106,24 +106,49 @@ html[${ROOT_ATTR}] .lgw-glasspanel {
   }
 }
 
+/*
+ * The layer root.
+ *
+ * contain: strict makes this a self-contained paint/stacking context, so the
+ * full-viewport backdrop-filter inside can never invalidate the shell's layout
+ * or force the rest of the page to re-composite.
+ */
 .lgw-backdrop {
   position: fixed;
   inset: 0;
   z-index: 0;
   overflow: hidden;
   pointer-events: none;
+  contain: strict;
+  isolation: isolate;
+}
+
+/*
+ * The media stage: the only element whose transform changes at runtime.
+ *
+ * Parallax used to write --lgw-px/--lgw-py onto .lgw-backdrop, the PARENT of
+ * the frosted layer. Changing a custom property on an ancestor invalidates every
+ * backdrop-filter in that subtree, so each mouse move forced a full-screen blur
+ * recompute. That was the reported stutter, and the flicker between the settings
+ * panel and the chat. The animated value lives on this leaf and the blur layer
+ * is its SIBLING, so a mouse move costs one compositor transform.
+ */
+.lgw-stage {
+  position: absolute;
+  inset: 0;
+  transform: translate3d(var(--lgw-px, 0px), var(--lgw-py, 0px), 0);
+  transition: transform 700ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 /*
  * The wallpaper media.
  *
- * Sizing is deliberately simple: the element covers the viewport exactly, and
- * object-fit (cover or contain) does all aspect-ratio handling. An earlier
- * version also applied inset -6% + width 112% + scale(1.06), which compounded
- * three over-scales with different origins: the media drifted off centre and
- * left a bare band, most visibly on a 16:9 wallpaper in a wider window.
- * Parallax is now a pure translate on top of a small, uniform scale, so every
- * edge stays covered.
+ * Sizing is deliberately simple: the element covers the stage exactly and
+ * object-fit does all aspect-ratio handling. An earlier version also applied
+ * inset -6% + width 112% + scale(1.06): three over-scales with different
+ * origins, which drifted the media off centre and left a bare band.
  */
 .lgw-media {
   position: absolute;
@@ -132,11 +157,9 @@ html[${ROOT_ATTR}] .lgw-glasspanel {
   height: 100%;
   object-fit: var(--lgw-fit, cover);
   object-position: center center;
-  /* Over-scale slightly so the parallax translate can never expose an edge. */
-  transform: translate3d(var(--lgw-px, 0px), var(--lgw-py, 0px), 0) scale(1.06);
+  /* One uniform over-scale, so the stage translate never exposes an edge. */
+  transform: scale(1.06);
   transform-origin: center center;
-  transition: transform 700ms cubic-bezier(0.22, 0.61, 0.36, 1);
-  will-change: transform;
   user-select: none;
   -webkit-user-drag: none;
   background: transparent;
@@ -152,6 +175,28 @@ html[${ROOT_ATTR}] .lgw-glasspanel {
 
 /* Frosted pane sitting over the media. Oversized a little so the blur reads to
    the very edge instead of feathering off at the last pixel. */
+/*
+ * Layer order inside .lgw-backdrop. The stage (media) paints first, then the
+ * frosted pane, then the cheap overlays. The poster keeps z-index 0 within the
+ * stage so the video crossfades over it rather than beside it.
+ */
+.lgw-media-wrap { z-index: 0; }
+.lgw-poster { z-index: 0; }
+
+/* The video fades in only once it has a fully decoded first frame. */
+.lgw-fade {
+  opacity: 0;
+  transition: opacity 380ms ease;
+  z-index: 1;
+}
+.lgw-fade-in {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lgw-fade { transition: none; }
+}
+
 .lgw-frost {
   position: absolute;
   inset: -2px;
@@ -160,15 +205,21 @@ html[${ROOT_ATTR}] .lgw-glasspanel {
   background: var(--lgw-tint-color, transparent);
 }
 
-/* Specular sheen: the "wet glass" highlight raked across the top-left. */
+/*
+ * Specular sheen: the "wet glass" highlight raked across the top-left.
+ *
+ * This used mix-blend-mode: soft-light. A blend mode forces the whole stacking
+ * context into an offscreen buffer, and doing that directly on top of a
+ * full-viewport backdrop-filter is the worst-case compositing path. Plain
+ * alpha looks the same here because the gradient is already white-on-transparent.
+ */
 .lgw-sheen {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(120% 80% at 12% 0%, rgba(255, 255, 255, 0.20) 0%, rgba(255, 255, 255, 0) 55%),
-    radial-gradient(90% 70% at 88% 100%, rgba(255, 255, 255, 0.10) 0%, rgba(255, 255, 255, 0) 60%);
-  mix-blend-mode: soft-light;
-  opacity: 0.9;
+    radial-gradient(120% 80% at 12% 0%, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0) 55%),
+    radial-gradient(90% 70% at 88% 100%, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0) 60%);
+  opacity: 0.85;
 }
 
 /* Corner falloff keeps the chrome readable over bright wallpapers. */
@@ -179,18 +230,20 @@ html[${ROOT_ATTR}] .lgw-glasspanel {
     radial-gradient(130% 110% at 50% 45%, rgba(0, 0, 0, 0) 42%, var(--lgw-vignette-color, rgba(0,0,0,0.34)) 100%);
 }
 
-/* Fine film grain kills the banding that large blurs create. */
+/*
+ * Film grain: kills the banding large blurs create.
+ *
+ * Was mix-blend-mode: overlay at 0.16 opacity, another offscreen blend on top
+ * of the blur. Plain alpha reads almost identically over photographic wallpaper
+ * and costs nothing extra.
+ */
 .lgw-grain {
   position: absolute;
   inset: 0;
-  opacity: 0.16;
-  mix-blend-mode: overlay;
+  opacity: 0.10;
   background-image: var(--lgw-grain-url);
+  background-repeat: repeat;
   background-size: 180px 180px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .lgw-media { transition: none; }
 }
 `
 
@@ -215,69 +268,30 @@ function ensureStyle() {
 }
 
 /**
- * Clears the shell's opaque full-viewport backgrounds so the wallpaper shows
- * through, and restores them exactly on teardown.
+ * Re-dresses the shell so the wallpaper shows through.
  *
- * The shell's own roots are hash-named CSS-module classes with hardcoded
- * `rgb(255,255,255)`, so they cannot be targeted by name or by a design token.
- * Geometry is the reliable discriminator: only containers that cover at least
- * 70% of the viewport are treated as backdrop surfaces. A composer card or a
- * dialog never matches, so nothing interactive loses its background.
+ * Each element is classified ONCE and remembered, so a repeat pass is a map
+ * lookup rather than a `getBoundingClientRect()` + `getComputedStyle()` per
+ * element. That matters because this runs from a MutationObserver: measuring on
+ * every pass forces synchronous layout, and writing `style` on an element we had
+ * already handled re-triggers the observer. Remembering the decision breaks both.
  *
- * Inline styles are recorded so teardown restores the exact prior state.
+ * Classification is geometric, because the shell's roots are hash-named
+ * CSS-module classes with hardcoded `rgb(255,255,255)` and cannot be targeted by
+ * name or by a design token:
+ *
+ *   - covers >= 70% of the viewport  -> a backdrop surface: clear its background
+ *   - full height, 120px..75% wide   -> a chrome panel: frost it
+ *   - anything else                  -> leave alone (cards, buttons, dialogs)
  */
-const CLEARED = new WeakMap()
+const SHELL_STATE = new WeakMap() // el -> 'cleared' | 'glassed'
+const SHELL_TOUCHED = new Set() // every element modified, for exact restore
+const PRIOR = new WeakMap() // el -> the inline state it had before we touched it
 
-function clearShellBackdrops(layer) {
-  if (typeof document === 'undefined' || !document.body) return
-  const vw = window.innerWidth
-  const vh = window.innerHeight
-  if (!vw || !vh) return
-
-  for (const el of document.querySelectorAll('div, main, section, aside')) {
-    if (el === layer || layer.contains(el) || el.contains(layer)) continue
-    // Only the document-level backdrop surfaces, never nested UI.
-    if (!document.body.contains(el)) continue
-
-    const rect = el.getBoundingClientRect()
-    if (rect.width < vw * 0.7 || rect.height < vh * 0.7) continue
-
-    const cs = getComputedStyle(el)
-    if (!cs.backgroundColor || cs.backgroundColor === 'rgba(0, 0, 0, 0)') continue
-
-    // Record the previous inline value once, so restore is exact.
-    if (!CLEARED.has(el)) {
-      CLEARED.set(el, {
-        value: el.style.getPropertyValue('background-color'),
-        priority: el.style.getPropertyPriority('background-color'),
-      })
-    }
-    el.style.setProperty('background-color', 'transparent', 'important')
-  }
-}
-
-function restoreShellBackdrops() {
-  for (const el of document.querySelectorAll('div, main, section, aside')) {
-    const prev = CLEARED.get(el)
-    if (prev === undefined) continue
-    if (prev.value) el.style.setProperty('background-color', prev.value, prev.priority)
-    else el.style.removeProperty('background-color')
-    CLEARED.delete(el)
-  }
-}
-
-/**
- * Panel-shaped shell surfaces (the sidebar rail, the transcript column) are left
- * opaque by `clearShellBackdrops`, which would look broken beside a visible
- * wallpaper. Give them the glass treatment instead: one class, so the stylesheet
- * owns the look and teardown is a single `classList.remove`.
- *
- * Only elements that are tall and panel-wide — but not backdrop-sized — are
- * candidates, which excludes cards, buttons, inputs and dialogs.
- */
+/** The class that gives a chrome panel its frosted look. */
 const GLASS_CLASS = 'lgw-glasspanel'
 
-function glassShellPanels(layer) {
+function dressShell(layer) {
   if (typeof document === 'undefined' || !document.body) return
   const vw = window.innerWidth
   const vh = window.innerHeight
@@ -286,35 +300,56 @@ function glassShellPanels(layer) {
   for (const el of document.querySelectorAll('div, aside, nav, main, section')) {
     if (el === layer || layer.contains(el) || el.contains(layer)) continue
     if (!document.body.contains(el)) continue
+    // Already classified: no measurement, no write, no observer feedback.
+    if (SHELL_STATE.has(el)) continue
+    // Never touch an element inside a dialog, menu or form control.
+    if (el.closest('[role="dialog"], [role="menu"], button, input, textarea, select')) continue
 
     const rect = el.getBoundingClientRect()
-    // Full-viewport surfaces are handled by clearShellBackdrops.
-    if (rect.width >= vw * 0.7 && rect.height >= vh * 0.7) continue
-    // Panel shape: full height (or nearly), and a meaningful but not full width.
-    if (rect.height < vh * 0.8) continue
-    if (rect.width < 120 || rect.width > vw * 0.75) continue
+    if (rect.width < 120 || rect.height < 80) continue
+
+    const isBackdrop = rect.width >= vw * 0.7 && rect.height >= vh * 0.7
+    const isPanel =
+      !isBackdrop && rect.height >= vh * 0.8 && rect.width >= 120 && rect.width <= vw * 0.75
+    if (!isBackdrop && !isPanel) continue
 
     const cs = getComputedStyle(el)
     if (!cs.backgroundColor || cs.backgroundColor === 'rgba(0, 0, 0, 0)') continue
-    // Never frost a control or an overlay.
-    if (el.closest('button, input, textarea, select, [role="dialog"], [role="menu"]')) continue
 
-    // Record the inline background so removing the class restores exactly.
-    if (!CLEARED.has(el)) {
-      CLEARED.set(el, {
+    PRIOR.set(el, {
+      bg: {
         value: el.style.getPropertyValue('background-color'),
         priority: el.style.getPropertyPriority('background-color'),
-      })
+      },
+    })
+
+    if (isPanel) {
+      // The class supplies the translucent background; clear the inline one that
+      // would otherwise win.
+      el.classList.add(GLASS_CLASS)
+      el.style.setProperty('background-color', 'transparent', 'important')
+      SHELL_STATE.set(el, 'glassed')
+    } else {
+      el.style.setProperty('background-color', 'transparent', 'important')
+      SHELL_STATE.set(el, 'cleared')
     }
-    // The class supplies the translucent background; clear the inline one that
-    // would otherwise win.
-    el.style.setProperty('background-color', 'transparent', 'important')
-    el.classList.add(GLASS_CLASS)
+    SHELL_TOUCHED.add(el)
   }
 }
 
-function unglassShellPanels() {
-  for (const el of document.querySelectorAll(`.${GLASS_CLASS}`)) el.classList.remove(GLASS_CLASS)
+/** Undo every change `dressShell` made, restoring the exact prior state. */
+function undressShell() {
+  for (const el of SHELL_TOUCHED) {
+    const prior = PRIOR.get(el)
+    if (prior) {
+      if (prior.bg.value) el.style.setProperty('background-color', prior.bg.value, prior.bg.priority)
+      else el.style.removeProperty('background-color')
+    }
+    el.classList.remove(GLASS_CLASS)
+    PRIOR.delete(el)
+    SHELL_STATE.delete(el)
+  }
+  SHELL_TOUCHED.clear()
 }
 
 /**
@@ -328,7 +363,10 @@ class Backdrop {
     this.iframe = null
     this.img = null
     this.rafPending = false
-    this.cleared = false
+    this.dressed = false
+    this.stage = null
+    this.lastPx = null
+    this.lastPy = null
     this.onPointerMove = this.onPointerMove.bind(this)
   }
 
@@ -347,10 +385,21 @@ class Backdrop {
     root.dataset.lgwRoot = ''
     root.setAttribute('aria-hidden', 'true')
 
+    /*
+     * Layer order, back to front:
+     *   .lgw-stage   the media, and the ONLY element parallax transforms
+     *   .lgw-frost   a SIBLING of the stage, so animating the stage never
+     *                invalidates this backdrop-filter
+     *   .lgw-sheen / .lgw-vignette / .lgw-grain   cheap alpha overlays
+     */
+    this.stage = document.createElement('div')
+    this.stage.className = 'lgw-stage'
+
     this.media = document.createElement('div')
     this.media.className = 'lgw-media-wrap'
     this.media.style.position = 'absolute'
     this.media.style.inset = '0'
+    this.stage.appendChild(this.media)
 
     this.frost = document.createElement('div')
     this.frost.className = 'lgw-frost'
@@ -362,7 +411,7 @@ class Backdrop {
     this.grain.className = 'lgw-grain'
     this.grain.style.setProperty('--lgw-grain-url', grainUrl())
 
-    root.append(this.media, this.frost, this.sheen, this.vignette, this.grain)
+    root.append(this.stage, this.frost, this.sheen, this.vignette, this.grain)
     document.body.insertBefore(root, document.body.firstChild)
     this.root = root
     return root
@@ -372,11 +421,11 @@ class Backdrop {
   destroy() {
     window.removeEventListener('pointermove', this.onPointerMove)
     this.clearMedia()
-    if (this.cleared) {
-      unglassShellPanels()
-      restoreShellBackdrops()
-      this.cleared = false
+    if (this.dressed) {
+      undressShell()
+      this.dressed = false
     }
+    this.stage = null
     if (this.root?.parentNode) this.root.parentNode.removeChild(this.root)
     this.root = null
     // A dropped rAF callback (background tab) would otherwise leave this true
@@ -476,17 +525,14 @@ class Backdrop {
         })
       }
       video.addEventListener('loadeddata', play, { once: true })
-      // Reveal the video only once it has a decoded frame, so the poster holds
-      // the backdrop until there is something better to show.
-      video.addEventListener(
-        'loadeddata',
-        () => {
-          video.style.opacity = '1'
-        },
-        { once: true },
-      )
-      video.style.opacity = '0'
-      video.style.transition = 'opacity 420ms ease'
+      /*
+       * Crossfade, but only from a fully decoded first frame. The video starts
+       * transparent and is revealed on `loadeddata`, while the poster beneath it
+       * stays until then. Without this both layers composited at partial opacity
+       * while one was still decoding: the "blurry mess" seen when switching.
+       */
+      video.classList.add('lgw-fade')
+      video.addEventListener('loadeddata', () => video.classList.add('lgw-fade-in'), { once: true })
       play()
       this.media.appendChild(video)
       this.video = video
@@ -524,21 +570,19 @@ class Backdrop {
       html.removeAttribute(ROOT_ATTR)
       this.root.style.display = 'none'
       window.removeEventListener('pointermove', this.onPointerMove)
-      if (this.cleared) {
-        unglassShellPanels()
-        restoreShellBackdrops()
-        this.cleared = false
+      if (this.dressed) {
+        undressShell()
+        this.dressed = false
       }
       return
     }
     this.root.style.display = ''
     html.setAttribute(ROOT_ATTR, '')
-    // The shell's opaque roots are siblings of this layer, so they must be
-    // made transparent for the wallpaper to be visible at all; the remaining
-    // panel surfaces are frosted so the chrome reads as liquid glass.
-    clearShellBackdrops(this.root)
-    glassShellPanels(this.root)
-    this.cleared = true
+    // The shell's opaque roots are siblings of this layer and must be made
+    // transparent for the wallpaper to be visible at all; panel surfaces are
+    // frosted so the chrome reads as liquid glass.
+    dressShell(this.root)
+    this.dressed = true
     this.root.style.setProperty('--lgw-blur', `${s.blur}px`)
     this.root.style.setProperty('--lgw-sat', `${s.saturation}%`)
     this.root.style.setProperty('--lgw-fit', s.fit)
@@ -554,17 +598,31 @@ class Backdrop {
     else window.removeEventListener('pointermove', this.onPointerMove)
   }
 
-  /** Subtle depth parallax — a few pixels, never enough to look loose. */
+  /**
+   * Subtle depth parallax — a few pixels, never enough to look loose.
+   *
+   * The translate is written to `.lgw-stage`, a leaf holding only the media.
+   * Writing it to the layer root instead would invalidate the sibling
+   * `backdrop-filter` on every mouse move: a full-screen blur recompute per
+   * frame, which is what made the GUI stutter and flicker.
+   *
+   * `requestAnimationFrame` coalesces a burst of pointer events into one write
+   * per frame, and an unchanged value is skipped entirely.
+   */
   onPointerMove(event) {
     if (this.rafPending) return
     this.rafPending = true
     requestAnimationFrame(() => {
       this.rafPending = false
-      const dx = (event.clientX / window.innerWidth - 0.5) * -18
-      const dy = (event.clientY / window.innerHeight - 0.5) * -12
-      if (!this.root) return
-      this.root.style.setProperty('--lgw-px', `${dx.toFixed(2)}px`)
-      this.root.style.setProperty('--lgw-py', `${dy.toFixed(2)}px`)
+      const stage = this.stage
+      if (!stage) return
+      const px = `${((event.clientX / window.innerWidth - 0.5) * -18).toFixed(2)}px`
+      const py = `${((event.clientY / window.innerHeight - 0.5) * -12).toFixed(2)}px`
+      if (px === this.lastPx && py === this.lastPy) return
+      this.lastPx = px
+      this.lastPy = py
+      stage.style.setProperty('--lgw-px', px)
+      stage.style.setProperty('--lgw-py', py)
     })
   }
 
@@ -602,9 +660,13 @@ function getBackdrop() {
 
 /**
  * The shell re-renders while in use (opening Settings, switching sessions) and
- * can repaint an opaque root that we had cleared, or mount a new one. Re-apply
- * the clearing whenever the body's subtree changes, coalesced to one pass per
- * frame so a busy render costs nothing measurable.
+ * can mount a new opaque root. Re-dress on structural change only.
+ *
+ * The observer watches `childList` and NOT `attributes`. Watching `style` was a
+ * feedback loop: `dressShell` writes inline styles, those writes matched the
+ * filter, and the observer fired again — a self-sustaining cycle that made the
+ * settings UI unresponsive. `dressShell` is also idempotent per element, so even
+ * a repeated pass costs a map lookup rather than a layout read.
  */
 let shellObserver = null
 function watchShell(backdropRef) {
@@ -617,13 +679,10 @@ function watchShell(backdropRef) {
     requestAnimationFrame(() => {
       queued = false
       const bd = backdropRef()
-      if (bd && bd.root && bd.state.enabled) {
-        clearShellBackdrops(bd.root)
-        glassShellPanels(bd.root)
-      }
+      if (bd && bd.root && bd.state.enabled) dressShell(bd.root)
     })
   })
-  shellObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] })
+  shellObserver.observe(document.body, { childList: true, subtree: true })
 }
 
 /**
