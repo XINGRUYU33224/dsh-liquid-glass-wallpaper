@@ -110,15 +110,57 @@ html[${ROOT_ATTR}] body {
 }
 
 /*
- * Only the shell's opaque FULL-VIEWPORT surfaces are cleared. The chrome panels
- * (sidebar rail, transcript column) are deliberately left alone.
+ * The shell's chrome panels (the sidebar rail) paint an opaque near-white, which
+ * next to a visible wallpaper reads as a separate slab instead of one continuous
+ * glass surface. While the layer is active they are made translucent so the
+ * wallpaper shows through.
  *
- * Frosting them was tried and removed: identifying a "chrome panel" by geometry
- * is unreliable, because the shell reuses the sidebar column as the settings
- * dialog's panel. Applying the glass class there changed how the shell sized its
- * flex children and collapsed the settings pane to 280px. A slightly more
- * integrated sidebar is not worth a broken settings UI.
+ * DELIBERATELY NO backdrop-filter HERE.
+ *
+ * An earlier attempt frosted these panels with backdrop-filter and the settings
+ * dialog collapsed from 1600px to 280px. The cause was later isolated by
+ * experiment: backdrop-filter creates a containing block, and the settings
+ * dialog is positioned inside the same subtree, so its width computation broke.
+ * Colour-only translucency measures identically to no change (overlay stays
+ * 1600px, dialog stays 612px), while adding the filter collapses it every time.
+ *
+ * The class is applied by dressShell() to elements that are full-height rails
+ * but NOT full-viewport, so cards, buttons, dialogs and the app frame are never
+ * touched.
+ *
+ * The transparent inline value that dressShell writes to remove the shell's own
+ * opaque colour would otherwise beat this rule, so it is explicitly re-beaten
+ * here with the same !important plus a class selector for higher specificity.
  */
+html[${ROOT_ATTR}] .lgw-glasspanel.lgw-glasspanel {
+  background-color: var(--lgw-panel-bg, rgba(255, 255, 255, 0.42)) !important;
+}
+
+/*
+ * A rail is a stack of full-height children that each paint their own opaque
+ * colour, so the translucent parent alone would not show the wallpaper. Clear
+ * their backgrounds but leave anything interactive (a button, the active-session
+ * pill) with its own surface, so the rail still reads as usable chrome.
+ */
+html[${ROOT_ATTR}] .lgw-glasspanel.lgw-glasspanel > div,
+html[${ROOT_ATTR}] .lgw-glasspanel.lgw-glasspanel > div > div {
+  background-color: transparent !important;
+}
+html[${ROOT_ATTR}] .lgw-glasspanel.lgw-glasspanel [class*="item"][aria-selected="true"],
+html[${ROOT_ATTR}] .lgw-glasspanel.lgw-glasspanel [class*="active"] {
+  background-color: var(--lgw-rail-active-bg, rgba(255, 255, 255, 0.55)) !important;
+}
+
+/* A dark theme needs a dark film rather than a light one. */
+@media (prefers-color-scheme: dark) {
+  html[${ROOT_ATTR}] .lgw-glasspanel.lgw-glasspanel {
+    background-color: var(--lgw-panel-bg-dark, rgba(18, 22, 32, 0.48)) !important;
+  }
+  html[${ROOT_ATTR}] .lgw-glasspanel.lgw-glasspanel [class*="item"][aria-selected="true"],
+  html[${ROOT_ATTR}] .lgw-glasspanel.lgw-glasspanel [class*="active"] {
+    background-color: var(--lgw-rail-active-bg-dark, rgba(255, 255, 255, 0.10)) !important;
+  }
+}
 
 /*
  * The layer root.
@@ -300,6 +342,9 @@ const SHELL_STATE = new WeakMap() // el -> { kind, rect }
 const SHELL_TOUCHED = new Set() // every element modified, for exact restore
 const PRIOR = new WeakMap() // el -> the inline state it had before we touched it
 
+/** Marks a chrome rail that gets the translucent panel colour. */
+const GLASS_CLASS = 'lgw-glasspanel'
+
 /** True when the element's box has changed since we classified it. */
 function geometryChanged(el, prev) {
   const r = el.getBoundingClientRect()
@@ -322,7 +367,13 @@ function undressOne(el) {
   SHELL_TOUCHED.delete(el)
 }
 
-function dressShell(layer) {
+/**
+ * @param opts.rails - when false, skip the chrome-panel treatment and only clear
+ *                     the full-viewport backdrop surfaces. Used to recover after
+ *                     the safety check trips.
+ */
+function dressShell(layer, opts = {}) {
+  const wantRails = opts.rails !== false
   if (typeof document === 'undefined' || !document.body) return
   const vw = window.innerWidth
   const vh = window.innerHeight
@@ -334,22 +385,36 @@ function dressShell(layer) {
 
     const cached = SHELL_STATE.get(el)
     if (cached) {
-      // Still ours, unless the shell has repurposed the element (the sidebar
-      // column becomes the settings dialog's panel at the same size).
+      // Still ours, unless the shell has repurposed the element.
       if (!geometryChanged(el, cached)) continue
       undressOne(el)
     }
 
     // Never touch an element inside a dialog, menu or form control: it is drawn
-    // above the wallpaper anyway, and clearing its background breaks its layout.
+    // above the wallpaper anyway, and changing its background breaks its layout.
     if (el.closest('[role="dialog"], [role="menu"], button, input, textarea, select')) continue
 
     const rect = el.getBoundingClientRect()
     if (rect.width < 120 || rect.height < 80) continue
 
-    // Backdrop surfaces only: things that cover most of the window. A sidebar,
-    // a card or a dialog is never touched.
-    if (rect.width < vw * 0.7 || rect.height < vh * 0.7) continue
+    const isBackdrop = rect.width >= vw * 0.7 && rect.height >= vh * 0.7
+    /*
+     * A chrome rail: full height but clearly narrower than the window. The width
+     * ceiling matters — the settings dialog's own containers are full height too,
+     * and touching those is what broke it before. Keep this well under half.
+     *
+     * Only the OUTERMOST rail is treated. A rail contains further full-height
+     * children that paint their own opaque colour; glassing the inner ones too
+     * would stack translucent layers and leave the innermost still opaque.
+     */
+    const isRail =
+      wantRails &&
+      !isBackdrop &&
+      rect.height >= vh * 0.8 &&
+      rect.width >= 120 &&
+      rect.width <= vw * 0.3 &&
+      !el.parentElement?.closest(`.${GLASS_CLASS}`)
+    if (!isBackdrop && !isRail) continue
 
     const cs = getComputedStyle(el)
     if (!cs.backgroundColor || cs.backgroundColor === 'rgba(0, 0, 0, 0)') continue
@@ -360,9 +425,21 @@ function dressShell(layer) {
         priority: el.style.getPropertyPriority('background-color'),
       },
     })
-    el.style.setProperty('background-color', 'transparent', 'important')
+
+    if (isRail) {
+      /*
+       * The class alone supplies the colour. Do NOT also write an inline value:
+       * an inline `!important` outranks any stylesheet rule, so writing
+       * `transparent !important` here made the rail fully transparent and beat
+       * the very rule that was meant to tint it.
+       */
+      el.classList.add(GLASS_CLASS)
+    } else {
+      el.style.setProperty('background-color', 'transparent', 'important')
+    }
+
     SHELL_STATE.set(el, {
-      kind: 'cleared',
+      kind: isRail ? 'rail' : 'cleared',
       w: rect.width,
       h: rect.height,
       x: rect.left,
@@ -380,6 +457,7 @@ function undressShell() {
       if (prior.bg.value) el.style.setProperty('background-color', prior.bg.value, prior.bg.priority)
       else el.style.removeProperty('background-color')
     }
+    el.classList.remove(GLASS_CLASS)
     PRIOR.delete(el)
     SHELL_STATE.delete(el)
   }
@@ -728,8 +806,24 @@ function getBackdrop() {
  * filter, and the observer fired again — a self-sustaining cycle that made the
  * settings UI unresponsive. `dressShell` is also idempotent per element, so even
  * a repeated pass costs a map lookup rather than a layout read.
+ *
+ * Each pass also runs a cheap SAFETY CHECK. The panel treatment has one known
+ * way to go wrong: if a shell container the settings dialog depends on is made
+ * translucent, the dialog collapses. The check notices a dialog that is present
+ * but implausibly narrow, and rolls the whole treatment back for the session
+ * rather than leaving a broken settings UI behind.
  */
 let shellObserver = null
+let railTreatmentDisabled = false
+
+function dialogCollapsed() {
+  const dialog = document.querySelector('[class*="overlay"] [class*="panel"], [role="dialog"]')
+  if (!dialog) return false
+  const r = dialog.getBoundingClientRect()
+  // A real dialog is comfortably wide; anything under 360px is a collapse.
+  return r.width > 0 && r.width < 360
+}
+
 function watchShell(backdropRef) {
   if (typeof MutationObserver === 'undefined' || !document.body) return
   if (shellObserver) return
@@ -740,7 +834,28 @@ function watchShell(backdropRef) {
     requestAnimationFrame(() => {
       queued = false
       const bd = backdropRef()
-      if (bd && bd.root && bd.state.enabled) dressShell(bd.root)
+      if (!bd || !bd.root || !bd.state.enabled) return
+
+      if (railTreatmentDisabled) {
+        // Only keep the backdrop clearance going.
+        dressShell(bd.root, { rails: false })
+        return
+      }
+      dressShell(bd.root)
+
+      if (dialogCollapsed()) {
+        railTreatmentDisabled = true
+        console.warn(
+          '[liquid-glass-wallpaper] the settings dialog collapsed; the sidebar ' +
+            'translucency is disabled for this session. Please report this with ' +
+            'your DSH version.',
+        )
+        // Drop the rail treatment and re-dress without it.
+        for (const el of SHELL_TOUCHED) {
+          if (SHELL_STATE.get(el)?.kind === 'rail') undressOne(el)
+        }
+        dressShell(bd.root, { rails: false })
+      }
     })
   })
   shellObserver.observe(document.body, { childList: true, subtree: true })
