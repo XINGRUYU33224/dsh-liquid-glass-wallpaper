@@ -34,6 +34,35 @@ const DEFAULTS = {
   parallax: true,
 }
 
+/**
+ * Per-source adjustments for still previews.
+ *
+ * Every scene preview in a normal Wallpaper Engine library is a 1:1 image
+ * (measured: 45 of 45, max 1080x1080). Shown with `cover` in a 16:9 viewport
+ * that crops ~40% of the height and then upscales 1.5-1.8x, so a scene reads as
+ * a blurred, badly framed band.
+ *
+ * A still has no motion to hide behind, so it gets a gentler treatment:
+ *   - far less frost (heavy blur on an already soft, upscaled image is mush),
+ *   - less saturation lift (upscaling exaggerates colour banding),
+ *   - a slightly stronger vignette to hide the upscaled edges,
+ *   - `contain` by default is NOT used: letterboxing a square into 16:9 leaves
+ *     big empty bars, which looks worse than cropping. Instead the crop is kept
+ *     but biased toward the top, where scene art usually centres its subject.
+ */
+const STILL_TUNING = {
+  blur: 12,
+  saturation: 104,
+  vignette: 26,
+  grain: true,
+  objectPosition: 'center 38%',
+}
+
+/** Media kinds that are a single still rather than a moving source. */
+function isStill(type) {
+  return type === 'scene' || type === 'image'
+}
+
 function loadState() {
   try {
     const raw = localStorage.getItem(LS_KEY)
@@ -86,25 +115,15 @@ html[${ROOT_ATTR}] body {
 }
 
 /*
- * The shell's chrome panels (sidebar rail, transcript column) paint opaque
- * white. Leaving them opaque looks broken next to a visible wallpaper, so while
- * the layer is active they are re-dressed as frosted glass: a translucent
- * surface plus a backdrop blur. The .lgw-glasspanel class is applied at runtime
- * by dressShell() to elements that are panel-shaped but not
- * backdrop-sized, so this never touches cards, buttons or inputs.
+ * Only the shell's opaque FULL-VIEWPORT surfaces are cleared. The chrome panels
+ * (sidebar rail, transcript column) are deliberately left alone.
+ *
+ * Frosting them was tried and removed: identifying a "chrome panel" by geometry
+ * is unreliable, because the shell reuses the sidebar column as the settings
+ * dialog's panel. Applying the glass class there changed how the shell sized its
+ * flex children and collapsed the settings pane to 280px. A slightly more
+ * integrated sidebar is not worth a broken settings UI.
  */
-html[${ROOT_ATTR}] .lgw-glasspanel {
-  background-color: var(--lgw-panel-bg, rgba(255, 255, 255, 0.42)) !important;
-  backdrop-filter: blur(var(--lgw-panel-blur, 20px)) saturate(var(--lgw-sat, 118%)) !important;
-  -webkit-backdrop-filter: blur(var(--lgw-panel-blur, 20px)) saturate(var(--lgw-sat, 118%)) !important;
-}
-
-/* Dark themes need a dark frost rather than a light one. */
-@media (prefers-color-scheme: dark) {
-  html[${ROOT_ATTR}] .lgw-glasspanel {
-    background-color: var(--lgw-panel-bg-dark, rgba(12, 16, 26, 0.46)) !important;
-  }
-}
 
 /*
  * The layer root.
@@ -276,20 +295,37 @@ function ensureStyle() {
  * every pass forces synchronous layout, and writing `style` on an element we had
  * already handled re-triggers the observer. Remembering the decision breaks both.
  *
- * Classification is geometric, because the shell's roots are hash-named
- * CSS-module classes with hardcoded `rgb(255,255,255)` and cannot be targeted by
- * name or by a design token:
- *
- *   - covers >= 70% of the viewport  -> a backdrop surface: clear its background
- *   - full height, 120px..75% wide   -> a chrome panel: frost it
- *   - anything else                  -> leave alone (cards, buttons, dialogs)
+ * The cache is not blind, though: the shell REUSES elements for different roles
+ * (the sidebar column becomes the settings dialog's panel, at the same size), so
+ * a cached element is re-checked whenever it has moved or resized since we
+ * dressed it. Without that, a panel dressed as chrome keeps its glass when it
+ * becomes a dialog — which is how the settings pane ended up 280px wide.
  */
-const SHELL_STATE = new WeakMap() // el -> 'cleared' | 'glassed'
+const SHELL_STATE = new WeakMap() // el -> { kind, rect }
 const SHELL_TOUCHED = new Set() // every element modified, for exact restore
 const PRIOR = new WeakMap() // el -> the inline state it had before we touched it
 
-/** The class that gives a chrome panel its frosted look. */
-const GLASS_CLASS = 'lgw-glasspanel'
+/** True when the element's box has changed since we classified it. */
+function geometryChanged(el, prev) {
+  const r = el.getBoundingClientRect()
+  return (
+    Math.abs(r.width - prev.w) > 4 ||
+    Math.abs(r.height - prev.h) > 4 ||
+    Math.abs(r.left - prev.x) > 4 ||
+    Math.abs(r.top - prev.y) > 4
+  )
+}
+
+function undressOne(el) {
+  const prior = PRIOR.get(el)
+  if (prior) {
+    if (prior.bg.value) el.style.setProperty('background-color', prior.bg.value, prior.bg.priority)
+    else el.style.removeProperty('background-color')
+  }
+  PRIOR.delete(el)
+  SHELL_STATE.delete(el)
+  SHELL_TOUCHED.delete(el)
+}
 
 function dressShell(layer) {
   if (typeof document === 'undefined' || !document.body) return
@@ -300,18 +336,25 @@ function dressShell(layer) {
   for (const el of document.querySelectorAll('div, aside, nav, main, section')) {
     if (el === layer || layer.contains(el) || el.contains(layer)) continue
     if (!document.body.contains(el)) continue
-    // Already classified: no measurement, no write, no observer feedback.
-    if (SHELL_STATE.has(el)) continue
-    // Never touch an element inside a dialog, menu or form control.
+
+    const cached = SHELL_STATE.get(el)
+    if (cached) {
+      // Still ours, unless the shell has repurposed the element (the sidebar
+      // column becomes the settings dialog's panel at the same size).
+      if (!geometryChanged(el, cached)) continue
+      undressOne(el)
+    }
+
+    // Never touch an element inside a dialog, menu or form control: it is drawn
+    // above the wallpaper anyway, and clearing its background breaks its layout.
     if (el.closest('[role="dialog"], [role="menu"], button, input, textarea, select')) continue
 
     const rect = el.getBoundingClientRect()
     if (rect.width < 120 || rect.height < 80) continue
 
-    const isBackdrop = rect.width >= vw * 0.7 && rect.height >= vh * 0.7
-    const isPanel =
-      !isBackdrop && rect.height >= vh * 0.8 && rect.width >= 120 && rect.width <= vw * 0.75
-    if (!isBackdrop && !isPanel) continue
+    // Backdrop surfaces only: things that cover most of the window. A sidebar,
+    // a card or a dialog is never touched.
+    if (rect.width < vw * 0.7 || rect.height < vh * 0.7) continue
 
     const cs = getComputedStyle(el)
     if (!cs.backgroundColor || cs.backgroundColor === 'rgba(0, 0, 0, 0)') continue
@@ -322,17 +365,14 @@ function dressShell(layer) {
         priority: el.style.getPropertyPriority('background-color'),
       },
     })
-
-    if (isPanel) {
-      // The class supplies the translucent background; clear the inline one that
-      // would otherwise win.
-      el.classList.add(GLASS_CLASS)
-      el.style.setProperty('background-color', 'transparent', 'important')
-      SHELL_STATE.set(el, 'glassed')
-    } else {
-      el.style.setProperty('background-color', 'transparent', 'important')
-      SHELL_STATE.set(el, 'cleared')
-    }
+    el.style.setProperty('background-color', 'transparent', 'important')
+    SHELL_STATE.set(el, {
+      kind: 'cleared',
+      w: rect.width,
+      h: rect.height,
+      x: rect.left,
+      y: rect.top,
+    })
     SHELL_TOUCHED.add(el)
   }
 }
@@ -345,7 +385,6 @@ function undressShell() {
       if (prior.bg.value) el.style.setProperty('background-color', prior.bg.value, prior.bg.priority)
       else el.style.removeProperty('background-color')
     }
-    el.classList.remove(GLASS_CLASS)
     PRIOR.delete(el)
     SHELL_STATE.delete(el)
   }
@@ -467,6 +506,9 @@ class Backdrop {
     if (this.mount() === null) return
     this.clearMedia()
     this.poster = null
+    // Remember what kind of source is live: a still needs different glass
+    // settings from a video (see STILL_TUNING).
+    this.mediaType = item ? item.type : null
     if (!item) return
 
     if (item.type === 'video' && item.mediaUrl) {
@@ -553,6 +595,9 @@ class Backdrop {
       img.alt = ''
       img.decoding = 'async'
       img.style.objectFit = this.state.fit
+      // Square stills cropped into a wide viewport: bias the crop upward, which
+      // is where scene art normally puts its subject.
+      if (isStill(item.type)) img.style.objectPosition = STILL_TUNING.objectPosition
       this.media.appendChild(img)
       this.img = img
     }
@@ -583,16 +628,37 @@ class Backdrop {
     // frosted so the chrome reads as liquid glass.
     dressShell(this.root)
     this.dressed = true
-    this.root.style.setProperty('--lgw-blur', `${s.blur}px`)
-    this.root.style.setProperty('--lgw-sat', `${s.saturation}%`)
+
+    /*
+     * A still preview is a different medium from a video and gets its own
+     * treatment. Scene previews are 1:1 and at most 1080px, so they are cropped
+     * ~40% and upscaled ~1.5x in a 16:9 window: heavy frost on top of that is
+     * what reads as "very blurry". Reduce the frost and the saturation lift,
+     * and deepen the vignette slightly to soften the upscaled edges.
+     *
+     * The user's own sliders still win: this only shifts the value they see
+     * when a still is active, and the card shows the effective number.
+     */
+    const still = isStill(this.mediaType)
+    const blur = still ? Math.min(s.blur, STILL_TUNING.blur) : s.blur
+    const sat = still ? Math.min(s.saturation, STILL_TUNING.saturation) : s.saturation
+    const vignette = still ? Math.max(s.vignette, STILL_TUNING.vignette) : s.vignette
+
+    this.root.style.setProperty('--lgw-blur', `${blur}px`)
+    this.root.style.setProperty('--lgw-sat', `${sat}%`)
     this.root.style.setProperty('--lgw-fit', s.fit)
     this.root.style.setProperty('--lgw-tint-color', `rgba(10, 14, 26, ${(s.tint / 100).toFixed(3)})`)
-    this.root.style.setProperty('--lgw-vignette-color', `rgba(0, 0, 0, ${(s.vignette / 100).toFixed(3)})`)
+    this.root.style.setProperty(
+      '--lgw-vignette-color',
+      `rgba(0, 0, 0, ${(vignette / 100).toFixed(3)})`,
+    )
     this.grain.style.display = s.grain ? '' : 'none'
     // Keep every visible media element on the same fit, including the poster
     // that shows while a video is still decoding or paused.
     for (const el of [this.video, this.img, this.poster]) {
-      if (el) el.style.objectFit = s.fit
+      if (!el) continue
+      el.style.objectFit = s.fit
+      el.style.objectPosition = still ? STILL_TUNING.objectPosition : 'center center'
     }
     if (s.parallax) window.addEventListener('pointermove', this.onPointerMove, { passive: true })
     else window.removeEventListener('pointermove', this.onPointerMove)
@@ -729,7 +795,20 @@ function humanSize(bytes) {
   return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${units[i]}`
 }
 
-const TYPE_LABEL = { video: '视频', scene: '场景', web: '网页', image: '图片' }
+/**
+ * Type labels. Scenes carry a "预览图" suffix because that is literally what
+ * they are: this plugin cannot replay a scene's .pkg, so it shows the project's
+ * preview still, which is 1:1 and at most 1080px. Saying so in the grid beats
+ * letting someone pick one and wonder why it looks soft.
+ */
+const TYPE_LABEL = { video: '视频', scene: '场景 · 预览图', web: '网页', image: '图片' }
+
+/** Short badge text for a tile, with a native/preview quality hint. */
+function typeBadge(item) {
+  if (item.type === 'video') return '视频 · 原生'
+  if (item.type === 'scene') return '场景 · 预览'
+  return TYPE_LABEL[item.type] ?? item.type
+}
 
 /**
  * The settings card. Registered into the settings section slot; if that slot is
@@ -979,6 +1058,15 @@ function Card({ ctx }) {
         ),
       ),
     ),
+    // Quality expectation, stated once rather than per tile.
+    counts.scene > 0
+      ? el(
+          'p',
+          { className: 'lgw-hint' },
+          '视频类按原生分辨率播放，最清晰；场景类只能显示项目的预览图（通常 1:1、≤1080px，' +
+            '裁入宽屏后会被放大），因此天生偏软。场景已自动降低磨砂强度以免雪上加霜。',
+        )
+      : null,
 
     !items && !error ? el('p', { className: 'lgw-intro' }, '正在扫描 Wallpaper Engine 库…') : null,
     items && visible.length === 0 ? el('p', { className: 'lgw-intro' }, '没有匹配的壁纸。') : null,
@@ -1003,7 +1091,7 @@ function Card({ ctx }) {
             item.previewUrl
               ? el('img', { src: item.previewUrl, alt: '', loading: 'lazy' })
               : el('span', { className: 'lgw-thumb-empty' }),
-            el('span', { className: 'lgw-badge-type' }, TYPE_LABEL[item.type] ?? item.type),
+            el('span', { className: 'lgw-badge-type' }, typeBadge(item)),
             item.id === state.activeId ? el('span', { className: 'lgw-badge-on' }, '使用中') : null,
           ),
           el('span', { className: 'lgw-tile-name' }, item.title),
@@ -1029,13 +1117,33 @@ function Card({ ctx }) {
 const CARD_CSS_ID = `${PLUGIN_ID}/card.css`
 
 const CARD_CSS = `
+/*
+ * The card must fill the settings pane.
+ *
+ * Two things squeezed it to ~44px:
+ *
+ *   1. the shell wraps a section in a flex row whose children are
+ *      flex: 1 1 0%. As a flex item with flex: 0 1 auto the card shrank to its
+ *      content, and width: 100% does not help when the basis resolves to zero —
+ *      it needs flex-grow;
+ *   2. a long unbreakable CJK string then set that content width.
+ *
+ * So: grow to fill, never shrink below a readable width, and allow wrapping.
+ */
 [data-lgw-card] {
   display: flex !important;
   flex-direction: column !important;
   gap: 16px !important;
-  container-type: inline-size;
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 320px !important;
 }
-[data-lgw-card] * { box-sizing: border-box; }
+[data-lgw-card] * { box-sizing: border-box; min-width: 0; }
+[data-lgw-card] p, [data-lgw-card] span {
+  overflow-wrap: break-word !important;
+  word-break: normal !important;
+}
 
 [data-lgw-card] .lgw-head { display: flex !important; align-items: center !important; gap: 12px !important; }
 [data-lgw-card] .lgw-title { margin: 0 !important; font-size: 15px !important; font-weight: 600 !important; color: var(--dsw-alias-label-primary) !important; }
@@ -1091,6 +1199,13 @@ const CARD_CSS = `
 [data-lgw-card] input.lgw-search { margin-left: auto !important; flex: 1 1 170px !important; min-width: 140px !important; height: 32px !important; font: inherit !important; font-size: 12px !important; padding: 0 11px !important; border-radius: 8px !important; border: 1px solid var(--dsw-alias-border-l2) !important; background: var(--dsw-specific-input-major, rgba(0,0,0,.04)) !important; color: var(--dsw-alias-label-primary) !important; outline: none !important; }
 [data-lgw-card] input.lgw-search:focus { border-color: var(--dsw-alias-brand-primary, #2b7cd9) !important; box-shadow: 0 0 0 3px var(--dsw-alias-button-primary-dimmed, rgba(43,124,217,.18)) !important; }
 [data-lgw-card] .lgw-filters { display: flex !important; gap: 6px !important; flex-wrap: wrap !important; }
+[data-lgw-card] .lgw-hint {
+  margin: 0 !important; font-size: 11.5px !important; line-height: 1.55 !important;
+  color: var(--dsw-alias-label-tertiary) !important;
+  padding: 7px 10px !important; border-radius: 8px !important;
+  border: 1px solid var(--dsw-alias-border-l2) !important;
+  background: var(--dsw-alias-bg-layer-1) !important;
+}
 
 /* the wallpaper grid — the rule a skin is most likely to break */
 [data-lgw-card] .lgw-grid {
