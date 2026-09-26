@@ -32,3 +32,6 @@ __pycache__/
 
 # local screenshots from the live-browser test scripts
 /shots/
+
+# local convenience: the push helper is machine-specific, not part of the project
+publish.ps1
